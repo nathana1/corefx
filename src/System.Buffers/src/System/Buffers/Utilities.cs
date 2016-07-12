@@ -4,11 +4,17 @@
 
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace System.Buffers
 {
     internal static class Utilities
     {
+        private static int nextSeed = 0;
+        
+        [ThreadStatic]
+        private static Random threadRandom;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static int SelectBucketIndex(int bufferSize)
         {
@@ -33,5 +39,14 @@ namespace System.Buffers
             Debug.Assert(maxSize >= 0);
             return maxSize;
         }
+
+        internal static int NextSubbucket(int maxValue) 
+        { 
+            if (threadRandom == null)
+            {
+                threadRandom = new Random(Interlocked.Increment(ref nextSeed));
+            }
+            return threadRandom.Next(maxValue);
+        } 
     }
 }

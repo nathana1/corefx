@@ -12,22 +12,31 @@ namespace System.Buffers
         /// <summary>Provides a thread-safe bucket containing buffers that can be Rent'd and Return'd.</summary>
         private sealed class Bucket
         {
+            private const int _subBucketCount = 50;
             internal readonly int _bufferLength;
-            private readonly T[][] _buffers;
+            private readonly T[][][] _buffers;
             private readonly int _poolId;
 
-            private SpinLock _lock; // do not make this readonly; it's a mutable struct
-            private int _index;
+            private SpinLock[] _locks; // do not make this readonly; it's a mutable struct
+            private int[] _indices;
 
             /// <summary>
             /// Creates the pool with numberOfBuffers arrays where each buffer is of bufferLength length.
             /// </summary>
             internal Bucket(int bufferLength, int numberOfBuffers, int poolId)
             {
-                _lock = new SpinLock(Debugger.IsAttached); // only enable thread tracking if debugger is attached; it adds non-trivial overheads to Enter/Exit
-                _buffers = new T[numberOfBuffers][];
+                _locks = new SpinLock[_subBucketCount];
+                
+                _buffers = new T[_subBucketCount][][];
+                for(int i = 0; i < _subBucketCount; i++)
+                {
+                    _locks[i] = new SpinLock(Debugger.IsAttached);
+                    _buffers[i] = new T[numberOfBuffers][];
+                }
+
                 _bufferLength = bufferLength;
                 _poolId = poolId;
+                _indices = new int[_subBucketCount];
             }
 
             /// <summary>Gets an ID for the bucket to use with events.</summary>
@@ -36,8 +45,11 @@ namespace System.Buffers
             /// <summary>Takes an array from the bucket.  If the bucket is empty, returns null.</summary>
             internal T[] Rent()
             {
-                T[][] buffers = _buffers;
+                int subBucket = Utilities.NextSubbucket(_subBucketCount);
+                var subBucketLock = _locks[subBucket]; 
+                T[][] buffers = _buffers[subBucket];
                 T[] buffer = null;
+                var index = _indices[subBucket];
 
                 // While holding the lock, grab whatever is at the next available index and
                 // update the index.  We do as little work as possible while holding the spin
@@ -46,18 +58,19 @@ namespace System.Buffers
                 bool lockTaken = false, allocateBuffer = false;
                 try
                 {
-                    _lock.Enter(ref lockTaken);
+                    subBucketLock.Enter(ref lockTaken);
 
-                    if (_index < buffers.Length)
+                    if (index < buffers.Length)
                     {
-                        buffer = buffers[_index];
-                        buffers[_index++] = null;
+                        buffer = buffers[index];
+                        buffers[index] = null;
+                        _indices[subBucket]++;
                         allocateBuffer = buffer == null;
                     }
                 }
                 finally
                 {
-                    if (lockTaken) _lock.Exit(false);
+                    if (lockTaken) subBucketLock.Exit(false);
                 }
 
                 // While we were holding the lock, we grabbed whatever was at the next available index, if
@@ -91,6 +104,9 @@ namespace System.Buffers
                     throw new ArgumentException(SR.ArgumentException_BufferNotFromPool, nameof(array));
                 }
 
+                int subBucket = Utilities.NextSubbucket(_subBucketCount);;
+                var subBucketLock = _locks[subBucket]; 
+                var index = _indices[subBucket];
                 // While holding the spin lock, if there's room available in the bucket,
                 // put the buffer into the next available slot.  Otherwise, we just drop it.
                 // The try/finally is necessary to properly handle thread aborts on platforms
@@ -98,16 +114,17 @@ namespace System.Buffers
                 bool lockTaken = false;
                 try
                 {
-                    _lock.Enter(ref lockTaken);
+                    subBucketLock.Enter(ref lockTaken);
 
-                    if (_index != 0)
+                    if (index != 0)
                     {
-                        _buffers[--_index] = array;
+                        _indices[subBucket] = --index;
+                        _buffers[subBucket][index] = array;
                     }
                 }
                 finally
                 {
-                    if (lockTaken) _lock.Exit(false);
+                    if (lockTaken) subBucketLock.Exit(false);
                 }
             }
         }
