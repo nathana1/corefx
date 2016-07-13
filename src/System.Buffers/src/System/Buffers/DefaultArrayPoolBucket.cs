@@ -28,10 +28,11 @@ namespace System.Buffers
                 _locks = new SpinLock[_subBucketCount];
                 
                 _buffers = new T[_subBucketCount][][];
+                var subBucketSize = Math.Max(numberOfBuffers / _subBucketCount, 1);
                 for(int i = 0; i < _subBucketCount; i++)
                 {
                     _locks[i] = new SpinLock(Debugger.IsAttached);
-                    _buffers[i] = new T[numberOfBuffers][];
+                    _buffers[i] = new T[subBucketSize][];
                 }
 
                 _bufferLength = bufferLength;
@@ -46,10 +47,9 @@ namespace System.Buffers
             internal T[] Rent()
             {
                 int subBucket = Utilities.NextSubbucket(_subBucketCount);
-                var subBucketLock = _locks[subBucket]; 
                 T[][] buffers = _buffers[subBucket];
                 T[] buffer = null;
-                var index = _indices[subBucket];
+                
 
                 // While holding the lock, grab whatever is at the next available index and
                 // update the index.  We do as little work as possible while holding the spin
@@ -58,8 +58,8 @@ namespace System.Buffers
                 bool lockTaken = false, allocateBuffer = false;
                 try
                 {
-                    subBucketLock.Enter(ref lockTaken);
-
+                    _locks[subBucket].Enter(ref lockTaken);
+                    var index = _indices[subBucket];
                     if (index < buffers.Length)
                     {
                         buffer = buffers[index];
@@ -70,7 +70,7 @@ namespace System.Buffers
                 }
                 finally
                 {
-                    if (lockTaken) subBucketLock.Exit(false);
+                    if (lockTaken) _locks[subBucket].Exit(false);
                 }
 
                 // While we were holding the lock, we grabbed whatever was at the next available index, if
@@ -105,8 +105,7 @@ namespace System.Buffers
                 }
 
                 int subBucket = Utilities.NextSubbucket(_subBucketCount);;
-                var subBucketLock = _locks[subBucket]; 
-                var index = _indices[subBucket];
+                
                 // While holding the spin lock, if there's room available in the bucket,
                 // put the buffer into the next available slot.  Otherwise, we just drop it.
                 // The try/finally is necessary to properly handle thread aborts on platforms
@@ -114,8 +113,8 @@ namespace System.Buffers
                 bool lockTaken = false;
                 try
                 {
-                    subBucketLock.Enter(ref lockTaken);
-
+                    _locks[subBucket].Enter(ref lockTaken);
+                    var index = _indices[subBucket];
                     if (index != 0)
                     {
                         _indices[subBucket] = --index;
@@ -124,7 +123,7 @@ namespace System.Buffers
                 }
                 finally
                 {
-                    if (lockTaken) subBucketLock.Exit(false);
+                    if (lockTaken) _locks[subBucket].Exit(false);
                 }
             }
         }
